@@ -1775,6 +1775,9 @@ class FanFicFarePlugin(InterfaceAction):
         failed_list = [ x for x in book_list if not x['good'] ]
         failed_ids = [ x['calibre_id'] for x in failed_list ]
 
+        chapter_error_list = [ x for x in book_list if 'chapter_error_count' in  x ]
+        chapter_error_ids = [ x['calibre_id'] for x in chapter_error_list ]
+
         if all_not_calonly_ids and \
                 (prefs['addtolists'] or prefs['addtoreadlists']):
             self.update_reading_lists(all_not_calonly_ids,add=True)
@@ -1796,11 +1799,13 @@ class FanFicFarePlugin(InterfaceAction):
         if showlist and prefs['mark']: # don't use with anthology
             db = self.gui.current_db
             marked_ids = dict()
-            marked_text = "fff_success"
+            marked_text = "fff"
             for index, book_id in enumerate(all_ids):
-                marked_ids[book_id] = '%s_%04d' % (marked_text, index)
+                marked_ids[book_id] = '%s_success_%04d' % (marked_text, index)
             for index, book_id in enumerate(failed_ids):
-                marked_ids[book_id] = 'fff_failed_%04d' % index
+                marked_ids[book_id] = '%s_failed_%04d' % (marked_text, index)
+            for index, book_id in enumerate(chapter_error_ids):
+                marked_ids[book_id] = '%s_chapter_error_%04d' % (marked_text, index)
             # Mark the results in our database
             db.set_marked_ids(marked_ids)
 
@@ -1856,6 +1861,7 @@ class FanFicFarePlugin(InterfaceAction):
         book_list = job.result
         good_list = [ x for x in book_list if x['good'] ]
         bad_list = [ x for x in book_list if not x['good'] ]
+        chapter_error_list = [ x for x in book_list if 'chapter_error_count' in  x ]
         try:
             good_list = sorted(good_list,key=lambda x : x['reportorder'])
             bad_list = sorted(bad_list,key=lambda x : x['reportorder'])
@@ -1865,9 +1871,15 @@ class FanFicFarePlugin(InterfaceAction):
         #print("book_list:%s"%book_list)
         payload = (good_list, bad_list, options)
 
+        if chapter_error_list:
+            info_dialog(self.gui, _('FanFicFare: ')+_('Some Failed Chapters'),
+                        _('Some of the stories downloaded have failed chapters.  Click View Log in the next dialog to see which.'),
+                        show=True,
+                        show_copy_button=False)
+
         if merge:
             if len(good_list) < 1:
-                info_dialog(self.gui, _('No Good Stories for Anthology'),
+                info_dialog(self.gui, _('FanFicFare: ')+_('No Good Stories for Anthology'),
                             _('No good stories/updates where downloaded, Anthology creation/update aborted.'),
                             show=True,
                             show_copy_button=False)
@@ -2065,7 +2077,7 @@ class FanFicFarePlugin(InterfaceAction):
 
     def update_error_column_loop(self,book,db=None,errorcol_label=None,lastcheckedcol_label=None):
         if book['calibre_id'] and errorcol_label:
-            if not book['good'] and (book['showerror'] or prefs['save_all_errors']):
+            if (not book['good'] or 'chapter_error_count' in book) and (book['showerror'] or prefs['save_all_errors']):
                 logger.debug("update_error_column_loop bad %s %s %s"%(book['title'],book['url'],book['comment']))
                 self.set_custom(db, book['calibre_id'], 'comment', book['comment'], label=errorcol_label, commit=True)
             else:

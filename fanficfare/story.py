@@ -156,6 +156,10 @@ except:
                 return (data,imgtype,imagetypes[imgtype])
 
     except:
+        # No calibre or PIL, give a random largish size.
+        def get_image_size(data):
+            return 1000,1000
+
         # No calibre or PIL, simple pass through with mimetype.
         def convert_image(url,data,sizes,grayscale,
                           removetrans,imgtype="jpg",background='#ffffff'):
@@ -472,6 +476,8 @@ class Story(Configurable):
 
         self.replacements_prepped = False
 
+        self.chapter_error_count = 0
+
     def prepare_replacements(self):
         if not self.replacements_prepped and not self.is_lightweight():
             # logger.debug("prepare_replacements")
@@ -497,6 +503,10 @@ class Story(Configurable):
                     iel = []
                     self.in_ex_cludes[ie] = set_in_ex_clude(ies)
             self.replacements_prepped = True
+
+    def clear_processed_metadata_cache(self):
+        self.processed_metadata_cache = {}
+        self.processed_metadata_list_cache = {}
 
     def set_chapters_range(self,first=None,last=None):
         self.chapter_first=first

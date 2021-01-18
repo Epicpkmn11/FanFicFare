@@ -255,6 +255,7 @@ class BaseSiteAdapter(Configurable):
 </div>"""%(url,traceback.format_exc().replace("&","&amp;").replace(">","&gt;").replace("<","&lt;")))
                             title = title+self.getConfig("chapter_title_error_mark","(CHAPTER ERROR)")
                             url="chapter url removed due to failure"
+                            self.story.chapter_error_count += 1
                         else:
                             raise
 
@@ -295,6 +296,18 @@ class BaseSiteAdapter(Configurable):
     def getStoryMetadataOnly(self,get_cover=True):
         if not self.metadataDone:
             self.doExtractChapterUrlsAndMetadata(get_cover=get_cover)
+            ## Due to some adapters calling getMetadata()etc, values
+            ## may have been cached during metadata collection and
+            ## *before* other values that their replace_metadata
+            ## depends on.
+            ##
+            ## Re-arranging the collection order isn't a good
+            ## solution--title could depend on category just as easily
+            ## as category on title.
+            ##
+            ## This clears the cache before title page etc and Calibre
+            ## at least.
+            self.story.clear_processed_metadata_cache()
 
             if not self.story.getMetadataRaw('dateUpdated'):
                 if self.story.getMetadataRaw('datePublished'):

@@ -40,7 +40,7 @@ else: # > 3.0
     def pickle_load(f):
         return pickle.load(f,encoding="bytes")
 
-version="3.26.0"
+version="3.28.7"
 os.environ['CURRENT_VERSION_ID']=version
 
 global_cache = 'global_cache'
@@ -521,7 +521,9 @@ def do_download(arg,
             import json
             print(json.dumps(metadata, sort_keys=True,
                              indent=2, separators=(',', ':')))
-
+        if adapter.story.chapter_error_count > 0:
+            print("%s chapters errored downloading %s"%(adapter.story.chapter_error_count,
+                                                        url))
         del adapter
 
     except exceptions.InvalidStoryURL as isu:
