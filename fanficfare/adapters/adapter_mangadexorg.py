@@ -208,7 +208,7 @@ class MangaDexOrgAdapter(BaseSiteAdapter):
             self.story.setMetadata('status', self.story.getMetadata("publication_status"))
         else:
             # Otherwise Complete if equal, In-Progress if the current is less
-            lastVolume = (float(data["lastVolume"]) if data["lastVolume"] != None else 0, float(data["lastChapter"]))
+            lastVolume = (float(data["lastVolume"]) if data["lastVolume"] != None else newestVolume[0], float(data["lastChapter"]))
             self.story.setMetadata('status', "In-Progress" if newestVolume < lastVolume else "Completed")
 
         if len(chapters["chapters"]) > 0:
