@@ -39,16 +39,19 @@ except NameError:
 
 def do_download_worker(book_list,
                        options,
-                       cpus,
                        merge=False,
                        notification=lambda x,y:x):
     '''
-    Coordinator job, to launch child jobs to extract ISBN for a set of books
+    Coordinator job, to launch child jobs to do downloads.
     This is run as a worker job in the background to keep the UI more
-    responsive and get around the memory leak issues as it will launch
+    responsive and get around any memory leak issues as it will launch
     a child job for each book as a worker process
     '''
-    server = Server(pool_size=cpus)
+    ## pool_size reduced to 1 to prevent parallel downloads on the
+    ## same site.  Also prevents parallel downloads on different
+    ## sites.  Might do something different to allow that again
+    ## someday.
+    server = Server(pool_size=1)
 
     logger.info(options['version'])
     total = 0
@@ -308,7 +311,10 @@ def do_download_for_worker(book,options,merge,notification=lambda x,y:x):
 
                 if adapter.story.chapter_error_count > 0:
                     book['comment'] = _('Update %(fileform)s completed, added %(added)s chapters, %(failed)s failed chapters, for %(total)s total.')%\
-                        {'fileform':options['fileform'],'added':(urlchaptercount-chaptercount),'total':urlchaptercount}
+                        {'fileform':options['fileform'],
+                         'failed':adapter.story.chapter_error_count,
+                         'added':(urlchaptercount-chaptercount),
+                         'total':urlchaptercount}
                     book['chapter_error_count'] = adapter.story.chapter_error_count
                 else:
                     book['comment'] = _('Update %(fileform)s completed, added %(added)s chapters for %(total)s total.')%\
