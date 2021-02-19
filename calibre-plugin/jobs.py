@@ -11,7 +11,7 @@ __docformat__ = 'restructuredtext en'
 import logging
 logger = logging.getLogger(__name__)
 
-import traceback
+from time import sleep
 from datetime import time
 from io import StringIO
 from collections import defaultdict
@@ -21,6 +21,7 @@ from calibre.utils.ipc.job import ParallelJob
 from calibre.constants import numeric_version as calibre_version
 from calibre.utils.date import local_tz
 from .fanficfare.six import text_type as unicode
+from .fanficfare.six.moves.queue import Empty
 
 from calibre_plugins.fanficfare_plugin.wordcount import get_word_count
 from calibre_plugins.fanficfare_plugin.prefs import (SAVE_YES, SAVE_YES_UNLESS_SITE)
@@ -39,6 +40,7 @@ except NameError:
 
 def do_download_worker(book_list,
                        options,
+                       cpus,
                        merge=False,
                        notification=lambda x,y:x):
     '''
@@ -47,33 +49,41 @@ def do_download_worker(book_list,
     responsive and get around any memory leak issues as it will launch
     a child job for each book as a worker process
     '''
-    ## pool_size reduced to 1 to prevent parallel downloads on the
-    ## same site.  Also prevents parallel downloads on different
-    ## sites.  Might do something different to allow that again
-    ## someday.
-    server = Server(pool_size=1)
+    ## Now running one BG proc per site, which downloads for the same
+    ## site in serial.
+    logger.info("CPUs:%s"%cpus)
+    server = Server(pool_size=cpus)
 
     logger.info(options['version'])
-    total = 0
-    alreadybad = []
+
+    sites_lists = defaultdict(list)
+    [ sites_lists[x['site']].append(x) for x in book_list if x['good'] ]
+
+    totals = {}
+    # can't do direct assignment in list comprehension?  I'm sure it
+    # makes sense to some pythonista.
+    # [ totals[x['url']]=0.0 for x in book_list if x['good'] ]
+    [ totals.update({x['url']:0.0}) for x in book_list if x['good']  ]
+    # logger.debug(sites_lists.keys())
+
     # Queue all the jobs
-    logger.info("Adding jobs for URLs:")
-    for book in book_list:
-        logger.info("%s"%book['url'])
-        if book['good']:
-            total += 1
-            args = ['calibre_plugins.fanficfare_plugin.jobs',
-                    'do_download_for_worker',
-                    (book,options,merge)]
-            job = ParallelJob('arbitrary_n',
-                              "url:(%s) id:(%s)"%(book['url'],book['calibre_id']),
-                              done=None,
-                              args=args)
-            job._book = book
-            server.add_job(job)
-        else:
-            # was already bad before the subprocess ever started.
-            alreadybad.append(book)
+    job_count = 0
+    for site in sites_lists.keys():
+        site_list = sites_lists[site]
+        logger.info(_("Launch background process for site %s:")%site + "\n" +
+                    "\n".join([ x['url'] for x in site_list ]))
+        # logger.debug([ x['url'] for x in site_list])
+        args = ['calibre_plugins.fanficfare_plugin.jobs',
+                'do_download_site',
+                (site,site_list,options,merge)]
+        job = ParallelJob('arbitrary_n',
+                          "site:(%s)"%site,
+                          done=None,
+                          args=args)
+        job._site_list = site_list
+        job._processed = False
+        server.add_job(job)
+        job_count += len(site_list)
 
     # This server is an arbitrary_n job, so there is a notifier available.
     # Set the % complete to a small number to avoid the 'unavailable' indicator
@@ -83,22 +93,54 @@ def do_download_worker(book_list,
     count = 0
     while True:
         job = server.changed_jobs_queue.get()
+        # logger.debug("job get job._processed:%s"%job._processed)
         # A job can 'change' when it is not finished, for example if it
-        # produces a notification. Ignore these.
-        job.update()
+        # produces a notification.
+        msg = None
+        try:
+            ## msg = book['url']
+            (percent,msg) = job.notifications.get_nowait()
+            # logger.debug("%s<-%s"%(percent,msg))
+            if percent == 10.0: # Only when signaling d/l done.
+                count += 1
+                totals[msg] = 1.0/len(totals)
+                # logger.info("Finished: %s"%msg)
+            else:
+                totals[msg] = percent/len(totals)
+            notification(max(0.01,sum(totals.values())), _('%(count)d of %(total)d stories finished downloading')%{'count':count,'total':len(totals)})
+        except Empty:
+            pass
+        # without update, is_finished will never be set.  however, we
+        # do want to get all the notifications for status so we don't
+        # miss the 'done' ones.
+        job.update(consume_notifications=False)
+
+        # if not job._processed:
+        #     sleep(0.5)
+        ## Can have a race condition where job.is_finished before
+        ## notifications for all downloads have been processed.
+        ## Or even after the job has been finished.
+        # logger.debug("job.is_finished(%s) or job._processed(%s)"%(job.is_finished, job._processed))
         if not job.is_finished:
             continue
-        # A job really finished. Get the information.
-        book_list.remove(job._book)
-        book_list.append(job.result)
-        book_id = job._book['calibre_id']
-        count = count + 1
-        notification(float(count)/total, _('%(count)d of %(total)d stories finished downloading')%{'count':count,'total':total})
-        # Add this job's output to the current log
-        logger.info('Logfile for book ID %s (%s)'%(book_id, job._book['title']))
-        logger.info(job.details)
 
-        if count >= total:
+        ## only process each job once.  We can get more than one loop
+        ## after job.is_finished.
+        if not job._processed:
+            # sleep(10)
+            # A job really finished. Get the information.
+
+            ## This is where bg proc details end up in GUI log.
+            ## job.details is the whole debug log for each proc.
+            logger.info("\n\n" + ("="*80) + " " + job.details.replace('\r',''))
+            # logger.debug("Finished background process for site %s:\n%s"%
+            #              (job._site_list[0]['site'],"\n".join([ x['url'] for x in job._site_list ])))
+            for b in job._site_list:
+                book_list.remove(b)
+            book_list.extend(job.result)
+            job._processed = True
+
+        if job_count == count:
             book_list = sorted(book_list,key=lambda x : x['listorder'])
             logger.info("\n"+_("Download Results:")+"\n%s\n"%("\n".join([ "%(status)s %(url)s %(comment)s" % book for book in book_list])))
 
@@ -139,6 +181,15 @@ def do_download_worker(book_list,
     # return the book list as the job result
     return book_list
 
+def do_download_site(site,book_list,options,merge,notification=lambda x,y:x):
+    # logger.info(_("Started job for %s")%site)
+    retval = []
+    for book in book_list:
+        # logger.info("%s"%book['url'])
+        retval.append(do_download_for_worker(book,options,merge,notification))
+        notification(10.0,book['url'])
+    return retval
+
 def do_download_for_worker(book,options,merge,notification=lambda x,y:x):
     '''
     Child job, to download story when run as a worker job
@@ -150,12 +201,13 @@ def do_download_for_worker(book,options,merge,notification=lambda x,y:x):
                   # plug impl.
         from calibre_plugins.fanficfare_plugin.dialogs import NotGoingToDownload
         from calibre_plugins.fanficfare_plugin.prefs import (OVERWRITE, OVERWRITEALWAYS, UPDATE, UPDATEALWAYS, ADDNEW, SKIP, CALIBREONLY, CALIBREONLYSAVECOL)
-        from calibre_plugins.fanficfare_plugin.fanficfare import adapters, writers, exceptions
+        from calibre_plugins.fanficfare_plugin.fanficfare import adapters, writers
         from calibre_plugins.fanficfare_plugin.fanficfare.epubutils import get_update_data
 
-        from calibre_plugins.fanficfare_plugin.fff_util import (get_fff_adapter, get_fff_config)
+        from calibre_plugins.fanficfare_plugin.fff_util import get_fff_config
 
         try:
+            logger.info("\n\n" + ("-"*80) + " " + book['url'])
             ## No need to download at all.  Can happen now due to
             ## collision moving into book for CALIBREONLY changing to
             ## ADDNEW when story URL not in library.
@@ -168,14 +220,6 @@ def do_download_for_worker(book,options,merge,notification=lambda x,y:x):
             configuration = get_fff_config(book['url'],
                                             options['fileform'],
                                             options['personal.ini'])
-
-            if configuration.getConfig('use_ssl_unverified_context'):
-                ## monkey patch to avoid SSL bug.  dupliated from
-                ## fff_plugin.py because bg jobs run in own process
-                ## space.
-                import ssl
-                if hasattr(ssl, '_create_unverified_context'):
-                    ssl._create_default_https_context = ssl._create_unverified_context
 
             if not options['updateepubcover'] and 'epub_for_update' in book and book['collision'] in (UPDATE, UPDATEALWAYS):
                 configuration.set("overrides","never_make_cover","true")
@@ -191,9 +235,26 @@ def do_download_for_worker(book,options,merge,notification=lambda x,y:x):
             adapter.password = book['password']
             adapter.setChaptersRange(book['begin'],book['end'])
 
-            configuration.load_cookiejar(options['cookiejarfile'])
-            #logger.debug("cookiejar:%s"%configuration.cookiejar)
-            configuration.set_pagecache(options['pagecache'])
+            ## each site download job starts with a new copy of the
+            ## cookiejar and basic_cache from the FG process.  They
+            ## are not shared between different sites' BG downloads
+            if configuration.getConfig('use_browser_cache'):
+                if 'browser_cache' in options:
+                    configuration.set_browser_cache(options['browser_cache'])
+                else:
+                    options['browser_cache'] = configuration.get_browser_cache()
+                    if 'browser_cachefile' in options:
+                        options['browser_cache'].load_cache(options['browser_cachefile'])
+            if 'basic_cache' in options:
+                configuration.set_basic_cache(options['basic_cache'])
+            else:
+                options['basic_cache'] = configuration.get_basic_cache()
+                options['basic_cache'].load_cache(options['basic_cachefile'])
+            if 'cookiejar' in options:
+                configuration.set_cookiejar(options['cookiejar'])
+            else:
+                options['cookiejar'] = configuration.get_cookiejar()
+                options['cookiejar'].load_cookiejar(options['cookiejarfile'])
 
             story = adapter.getStoryMetadataOnly()
             if not story.getMetadata("series") and 'calibre_series' in book:
@@ -248,7 +309,9 @@ def do_download_for_worker(book,options,merge,notification=lambda x,y:x):
 
                 logger.info("write to %s"%outfile)
                 inject_cal_cols(book,story,configuration)
-                writer.writeStory(outfilename=outfile, forceOverwrite=True)
+                writer.writeStory(outfilename=outfile,
+                                  forceOverwrite=True,
+                                  notification=notification)
 
                 if adapter.story.chapter_error_count > 0:
                     book['comment'] = _('Download %(fileform)s completed, %(failed)s failed chapters, %(total)s total chapters.')%\
@@ -307,7 +370,9 @@ def do_download_for_worker(book,options,merge,notification=lambda x,y:x):
                 logger.info("write to %s"%outfile)
 
                 inject_cal_cols(book,story,configuration)
-                writer.writeStory(outfilename=outfile, forceOverwrite=True)
+                writer.writeStory(outfilename=outfile,
+                                  forceOverwrite=True,
+                                  notification=notification)
 
                 if adapter.story.chapter_error_count > 0:
                     book['comment'] = _('Update %(fileform)s completed, added %(added)s chapters, %(failed)s failed chapters, for %(total)s total.')%\
@@ -330,7 +395,7 @@ def do_download_for_worker(book,options,merge,notification=lambda x,y:x):
             if options['do_wordcount'] == SAVE_YES or (
                 options['do_wordcount'] == SAVE_YES_UNLESS_SITE and not story.getMetadataRaw('numWords') ):
                 wordcount = get_word_count(outfile)
-                logger.info("get_word_count:%s"%wordcount)
+                # logger.info("get_word_count:%s"%wordcount)
                 story.setMetadata('numWords',wordcount)
                 writer.writeStory(outfilename=outfile, forceOverwrite=True)
                 book['all_metadata'] = story.getAllMetadata(removeallentities=True)
@@ -368,8 +433,6 @@ def do_download_for_worker(book,options,merge,notification=lambda x,y:x):
             book['icon']='dialog_error.png'
             book['status'] = _('Error')
             logger.info("Exception: %s:%s"%(book,book['comment']),exc_info=True)
-
-        #time.sleep(10)
     return book
 
 ## calibre's columns for an existing book are passed in and injected

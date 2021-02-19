@@ -11,21 +11,22 @@ __docformat__ = 'restructuredtext en'
 import logging
 logger = logging.getLogger(__name__)
 
-import traceback, copy, threading, re
+import re
+import threading
 from collections import OrderedDict
 
 try:
     from PyQt5 import QtWidgets as QtGui
-    from PyQt5.Qt import (QDialog, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
-                          QLabel, QLineEdit, QFont, QWidget, QTextEdit, QComboBox,
-                          QCheckBox, QPushButton, QTabWidget, QScrollArea,
-                          QDialogButtonBox, QGroupBox, QButtonGroup, QRadioButton, Qt)
+    from PyQt5.Qt import (QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel,
+                          QLineEdit, QWidget, QComboBox, QCheckBox, QPushButton, QTabWidget,
+                          QScrollArea, QGroupBox, QButtonGroup, QRadioButton,
+                          Qt)
 except ImportError as e:
     from PyQt4 import QtGui
-    from PyQt4.Qt import (QDialog, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
-                          QLabel, QLineEdit, QFont, QWidget, QTextEdit, QComboBox,
-                          QCheckBox, QPushButton, QTabWidget, QScrollArea,
-                          QDialogButtonBox, QGroupBox, QButtonGroup, QRadioButton, Qt)
+    from PyQt4.Qt import (QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel,
+                          QLineEdit, QWidget, QComboBox, QCheckBox, QPushButton, QTabWidget,
+                          QScrollArea, QGroupBox, QButtonGroup, QRadioButton,
+                          Qt)
 try:
     from calibre.gui2 import QVariant
     del QVariant
@@ -42,8 +43,7 @@ else:
             return [convert_qvariant(i) for i in x.toList()]
         return x.toPyObject()
 
-from calibre.gui2 import dynamic, info_dialog, question_dialog
-from calibre.gui2.ui import get_gui
+from calibre.gui2 import dynamic, info_dialog
 from calibre.gui2.complete2 import EditWithComplete
 from .fanficfare.six import text_type as unicode
 
@@ -84,23 +84,21 @@ no_trans = { 'pini':'personal.ini',
 
 STD_COLS_SKIP = ['size','cover','news','ondevice','path','series_sort','sort']
 
-from calibre_plugins.fanficfare_plugin.prefs \
-    import (prefs, rejects_data, PREFS_NAMESPACE, prefs_save_options,
-            updatecalcover_order, gencalcover_order, do_wordcount_order,
-            SAVE_YES, SAVE_NO)
+from calibre_plugins.fanficfare_plugin.prefs import (
+    prefs, rejects_data, PREFS_NAMESPACE, prefs_save_options,
+    updatecalcover_order, gencalcover_order, do_wordcount_order,
+    SAVE_YES, SAVE_NO)
 
-from calibre_plugins.fanficfare_plugin.dialogs \
-    import (UPDATE, UPDATEALWAYS, collision_order, save_collisions, RejectListDialog,
-            EditTextDialog, IniTextDialog, RejectUrlEntry)
+from calibre_plugins.fanficfare_plugin.dialogs import (
+    UPDATE, UPDATEALWAYS, collision_order, save_collisions, RejectListDialog,
+    EditTextDialog, IniTextDialog, RejectUrlEntry)
 
-from calibre_plugins.fanficfare_plugin.fanficfare.adapters \
-    import getSiteSections
+from calibre_plugins.fanficfare_plugin.fanficfare.adapters import (
+    getSiteSections, get_section_url)
 
-from calibre_plugins.fanficfare_plugin.common_utils \
-    import ( KeyboardConfigDialog, PrefsViewerDialog, busy_cursor )
+from calibre_plugins.fanficfare_plugin.common_utils import (
+    KeyboardConfigDialog, PrefsViewerDialog, busy_cursor )
 
-from calibre_plugins.fanficfare_plugin.fff_util \
-    import (test_config)
 
 class RejectURLList:
     def __init__(self,prefs,rejects_data):
@@ -118,9 +116,14 @@ class RejectURLList:
                                  fromline=True,normalize=normalize)
             #print("rue.url:%s"%rue.url)
             if rue.valid:
-                cache[rue.url] = rue
+                cache[get_section_url(rue.url)] = rue
         return cache
 
+    ## Note that RejectURLList now applies
+    ## adapters.get_section_url(url) to all urls before caching and
+    ## before checking so ffnet/a/123/1/Title -> ffnet/a/123/1/,
+    ## xenforo too.  Saved list still contains full URL so we're not
+    ## destorying any data.  Could have duplicates, though.
     def _get_listcache(self):
         with busy_cursor():
             if self.listcache == None:
@@ -132,7 +135,18 @@ class RejectURLList:
                     for x in self.rejects_data['rejecturls_data']:
                         rue = RejectUrlEntry.from_data(x)
                         if rue.valid:
-                            self.listcache[rue.url] = rue
+                            # if rue.url != get_section_url(rue.url):
+                            #     logger.debug("\n=============\nurl:%s section:%s\n================"%(rue.url,get_section_url(rue.url)))
+                            section_url = get_section_url(rue.url)
+                            if section_url in self.listcache:
+                                logger.debug("Duplicate in Reject list: %s %s (use longer)"%(
+                                        self.listcache[section_url].url, rue.url))
+                            ## if there's a dup, keep the one with the
+                            ## longer URL, more likely to be titled
+                            ## version.
+                            if( section_url not in self.listcache
+                                or len(rue.url) > len(self.listcache[section_url].url) ):
+                                self.listcache[section_url] = rue
                 else:
                     # Assume saved rejects list is already normalized after
                     # v2.10.9.  If normalization needs to change someday, can
@@ -145,7 +159,8 @@ class RejectURLList:
                         self._save_list(self.listcache,clearcache=False)
                     # logger.debug("_get_listcache: prefs['rejecturls']")
 
-                # logger.debug([ x.to_data() for x in self.listcache.values()])
+        # logger.debug(self.listcache)
+        # logger.debug([ x.to_data() for x in self.listcache.values()])
         return self.listcache
 
     def _save_list(self,listcache,clearcache=True):
@@ -166,11 +181,14 @@ class RejectURLList:
 
     # true if url is in list.
     def check(self,url):
+        # logger.debug("Checking %s(%s)"%(url,get_section_url(url)))
+        url = get_section_url(url)
         with self.sync_lock:
             listcache = self._get_listcache()
             return url in listcache
 
     def get_note(self,url):
+        url = get_section_url(url)
         with self.sync_lock:
             listcache = self._get_listcache()
             if url in listcache:
@@ -179,6 +197,7 @@ class RejectURLList:
             return ''
 
     def get_full_note(self,url):
+        url = get_section_url(url)
         with self.sync_lock:
             listcache = self._get_listcache()
             if url in listcache:
@@ -187,6 +206,7 @@ class RejectURLList:
             return ''
 
     def remove(self,url):
+        url = get_section_url(url)
         with self.sync_lock:
             listcache = self._get_listcache()
             if url in listcache:
@@ -203,7 +223,7 @@ class RejectURLList:
             else:
                 listcache = self._get_listcache()
             for l in rejectlist:
-                listcache[l.url]=l
+                listcache[get_section_url(l.url)]=l
             self._save_list(listcache)
 
     def get_list(self):
@@ -713,12 +733,13 @@ class BasicTab(QWidget):
             self.collision.setCurrentIndex(i)
 
     def show_rejectlist(self):
-        d = RejectListDialog(self,
-                             rejecturllist.get_list(),
-                             rejectreasons=rejecturllist.get_reject_reasons(),
-                             header=_("Edit Reject URLs List"),
-                             show_delete=False,
-                             show_all_reasons=False)
+        with busy_cursor():
+            d = RejectListDialog(self,
+                                 rejecturllist.get_list(),
+                                 rejectreasons=rejecturllist.get_reject_reasons(),
+                                 header=_("Edit Reject URLs List"),
+                                 show_delete=False,
+                                 show_all_reasons=False)
         d.exec_()
         if d.result() != d.Accepted:
             return

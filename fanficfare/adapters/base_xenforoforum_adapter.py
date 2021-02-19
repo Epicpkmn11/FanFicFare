@@ -19,14 +19,12 @@ from __future__ import absolute_import
 import logging
 logger = logging.getLogger(__name__)
 import re
-from xml.dom.minidom import parseString
 
 from ..htmlcleanup import stripHTML
 from .. import exceptions as exceptions
 
 # py2 vs py3 transition
 from ..six import text_type as unicode
-from ..six.moves.urllib.error import HTTPError
 
 from .base_adapter import BaseSiteAdapter,  makeDate
 
@@ -90,20 +88,6 @@ class BaseXenForoForumAdapter(BaseSiteAdapter):
         ## need to accept http and https still.
         return re.escape(self.getURLPrefix()).replace("https","https?")+r"(?P<tp>threads|posts)/(?P<title>.+\.)?(?P<id>\d+)/?[^#]*?(#?post-(?P<anchorpost>\d+))?$"
 
-    def _fetchUrlOpened(self, url,
-                        parameters=None,
-                        usecache=True,
-                        extrasleep=2.0,
-                        referer=None):
-        ## We've been requested by the site(s) admin to rein in hits.
-        ## This is in additional to what ever the slow_down_sleep_time
-        ## setting is.
-        return BaseSiteAdapter._fetchUrlOpened(self,url,
-                                               parameters=parameters,
-                                               usecache=usecache,
-                                               extrasleep=extrasleep,
-                                               referer=referer)
-
     ## For adapters, especially base_xenforoforum to override.  Make
     ## sure to return unchanged URL if it's NOT a chapter URL.  This
     ## is most helpful for xenforoforum because threadmarks use
@@ -162,6 +146,12 @@ class BaseXenForoForumAdapter(BaseSiteAdapter):
             if '#post-' in url:
                 url = self.getURLPrefix()+'posts/'+url.split('#post-')[1]+'/'
 
+            # https://forums.spacebattles.com/threads/beaconhills-morning-worm-one-shot-series-worm.325982/post-73457958
+            # https://forums.spacebattles.com/threads/325982/post-73457958
+            # both need to become:
+            # https://forums.spacebattles.com/posts/73457958/
+            url = re.sub(re.escape(self.getPathPrefix())+r'threads/.*/post-([0-9]+)/?$',self.getPathPrefix()+r'posts/\1/',url)
+
             ## Same as above except for for case where author mistakenly
             ## used the reply link instead of normal link to post.
             # "http://forums.spacebattles.com/threads/manager-worm-story-thread-iv.301602/reply?quote=15962513"
@@ -182,21 +172,15 @@ class BaseXenForoForumAdapter(BaseSiteAdapter):
 
         return (is_chapter_url,url)
 
-    def _section_url(self,url):
+    @classmethod
+    def get_section_url(cls,url):
         ## domain is checked in configuration loop.  Can't check for
         ## storyId, because this is called before story url has been
         ## parsed.
         # logger.debug("pre--url:%s"%url)
-        url = re.sub(re.escape(self.getPathPrefix())+r'threads/.*\.(?P<id>[0-9]+)/',self.getPathPrefix()+r'threads/\g<id>/',url)
+        url = re.sub(re.escape(cls.getPathPrefix())+r'threads/.*\.(?P<id>[0-9]+)/',cls.getPathPrefix()+r'threads/\g<id>/',url)
         # logger.debug("post-url:%s"%url)
         return url
-
-    def use_pagecache(self):
-        '''
-        adapters that will work with the page cache need to implement
-        this and change it to True.
-        '''
-        return True
 
     def performLogin(self,data):
         params = {}
@@ -226,7 +210,7 @@ class BaseXenForoForumAdapter(BaseSiteAdapter):
         logger.debug("Will now login to URL (%s) as (%s)" % (loginUrl,
                                                              params['login']))
 
-        d = self._fetchUrl(loginUrl, params)
+        d = self.post_request(loginUrl, params)
 
         if "Log Out" not in d:
             # logger.debug(d)
@@ -260,9 +244,7 @@ class BaseXenForoForumAdapter(BaseSiteAdapter):
         ## <a href="/cdn-cgi/l/email-protection" class="__cf_email__"
         ## data-cfemail="c283b0afb1afa3b1b6a7b08292b0adb6a7a1b6adb0a3b6a7878c87eca5adb4">[email&#160;protected]</a>
         for a in soup.find_all('a',href="/cdn-cgi/l/email-protection", class_="__cf_email__"):
-            logger.debug(a)
             email = decodeEmail(a['data-cfemail'])
-            logger.debug(email)
             a.insert_before(email)
             a.extract()
 
@@ -372,7 +354,7 @@ class BaseXenForoForumAdapter(BaseSiteAdapter):
             # logger.debug("fetch_threadmarks(%s,tmcat_num=%s,passed_tmcat_index:%s,url=%s,dedup=%s)\nDuplicate threadmark URL, skipping"%(tmcat_name,tmcat_num, passed_tmcat_index, url, dedup))
             return threadmarks
         dedup = dedup + [url]
-        soupmarks = self.make_soup(self._fetchUrl(url))
+        soupmarks = self.make_soup(self.get_request(url))
         tm_list = self.get_threadmarks_list(soupmarks)
         if not tm_list: # load-range don't match
             tm_list = soupmarks
@@ -439,30 +421,24 @@ class BaseXenForoForumAdapter(BaseSiteAdapter):
         logger.info("url: "+useurl)
 
         try:
-            (data,opened) = self._fetchUrlOpened(useurl)
-            useurl = opened.geturl()
+            (data,useurl) = self.get_request_redirected(useurl)
             logger.info("use useurl: "+useurl)
             # can't login before initial fetch--need a cookie.
             if self.getConfig('always_login',False):
                 self.performLogin(data)
-                (data,opened) = self._fetchUrlOpened(self.url,
-                                                     usecache=False)
-                useurl = opened.geturl()
+                (data,useurl) = self.get_request_redirected(self.url,
+                                                            usecache=False)
                 logger.info("use useurl: "+useurl)
-        except HTTPError as e:
-            # QQ gives 403, SV at least gives 404.  Which unfortunately
-            if e.code == 403 or self.getConfig('always_login',False):
+        except exceptions.HTTPErrorFFF as e:
+            # QQ gives 403 for login needed
+            if e.status_code == 403 or self.getConfig('always_login',False):
                 self.performLogin(data)
-                (data,opened) = self._fetchUrlOpened(self.url,
-                                                     usecache=False)
-                useurl = opened.geturl()
+                (data,useurl) = self.get_request_redirected(self.url,
+                                                            usecache=False)
                 logger.info("use useurl: "+useurl)
-            elif e.code == 404:
-                raise exceptions.StoryDoesNotExist(self.url)
             else:
                 raise
 
-        # use BeautifulSoup HTML parser to make everything easier to find.
         topsoup = souptag = self.make_soup(data)
 
         if '#' not in useurl and self.getPathPrefix()+'posts/' not in useurl:
@@ -549,7 +525,7 @@ class BaseXenForoForumAdapter(BaseSiteAdapter):
         self.parse_author(souptag)
 
         if self.getConfig('author_avatar_cover'):
-            authorcard = self.make_soup(self._fetchUrl(authorUrl+"?card=1"))
+            authorcard = self.make_soup(self.get_request(authorUrl+"?card=1"))
             coverurl = '/'+authorcard.find('div',{'class':'avatarCropper'}).find('img')['src']
             self.setCoverImage(self.url,coverurl)
             ## https://forums.spacebattles.com/members/mp3-1415player.322925/?card=1
@@ -673,6 +649,8 @@ class BaseXenForoForumAdapter(BaseSiteAdapter):
             postid = "post-"+postid.split('/')[-2]
         elif '#post-' in postid:
             postid = postid.split('#')[1]
+        elif '/post-' in postid:
+            postid = "post-"+postid.split('/post-')[-1]
         # logger.debug("get cache %s %s"%(postid,postid in self.post_cache))
         return self.post_cache.get(postid,None)
 
@@ -705,7 +683,7 @@ class BaseXenForoForumAdapter(BaseSiteAdapter):
                     # logger.debug('Reader page offset:%s tmcat_num:%s tmcat_index:%s'%(offset,tmcat_num,tmcat_index))
                     reader_url=self.make_reader_url(tmcat_num,reader_page_num)
                     # logger.debug("Fetch reader URL to: %s"%reader_url)
-                    topsoup = self.make_soup(self._fetchUrl(reader_url))
+                    topsoup = self.make_soup(self.get_request(reader_url))
                     # make_soup() loads cache with posts from that reader
                     # page.  looking for it in cache reuses code in
                     # cache_posts that finds post tags.
@@ -720,8 +698,7 @@ class BaseXenForoForumAdapter(BaseSiteAdapter):
 
             souptag = self.get_cache_post(url)
             if not souptag:
-                (data,opened) = self._fetchUrlOpened(url)
-                url = unicode(opened.geturl())
+                (data,url) = self.get_request_redirected(url)
                 if '#' in origurl and '#' not in url:
                     url = url + origurl[origurl.index('#'):]
                     logger.debug("chapter URL redirected to: %s"%url)

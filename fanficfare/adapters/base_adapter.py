@@ -39,9 +39,9 @@ from ..htmlheuristics import replace_br_with_p
 logger = logging.getLogger(__name__)
 
 from ..story import Story
-from ..configurable import Configurable
+from ..requestable import Requestable
 from ..htmlcleanup import stripHTML
-from ..exceptions import InvalidStoryURL
+from ..exceptions import InvalidStoryURL, StoryDoesNotExist, HTTPErrorFFF
 
 # quick convenience class
 class TimeKeeper(defaultdict):
@@ -56,7 +56,7 @@ class TimeKeeper(defaultdict):
         keys.sort()
         return u"\n".join([ u"%s: %s"%(k,self[k]) for k in keys ])
 import inspect
-class BaseSiteAdapter(Configurable):
+class BaseSiteAdapter(Requestable):
 
     @classmethod
     def matchesSite(cls,site):
@@ -70,7 +70,7 @@ class BaseSiteAdapter(Configurable):
         return re.match(self.getSiteURLPattern(), self.url)
 
     def __init__(self, configuration, url):
-        Configurable.__init__(self, configuration)
+        Requestable.__init__(self, configuration)
 
         self.username = "NoneGiven" # if left empty, site doesn't return any message at all.
         self.password = ""
@@ -93,7 +93,7 @@ class BaseSiteAdapter(Configurable):
         self.logfile = None
         self.ignore_chapter_url_list = None
 
-        self.section_url_names(self.getSiteDomain(),self._section_url)
+        self.section_url_names(self.getSiteDomain(),self.get_section_url)
 
         ## for doing some performance profiling.
         self.times = TimeKeeper()
@@ -104,6 +104,7 @@ class BaseSiteAdapter(Configurable):
         cl.remove('object') # remove a few common-to-all classes
         cl.remove('BaseSiteAdapter')
         cl.remove('Configurable')
+        cl.remove('Requestable')
         self.story.extendList('adapter_classes',cl)
 
         self._setURL(url)
@@ -112,20 +113,17 @@ class BaseSiteAdapter(Configurable):
                                   self.getSiteDomain(),
                                   self.getSiteExampleURLs())
 
-    def use_pagecache(self):
-        '''
-        adapters that will work with the page cache need to implement
-        this and change it to True.
-        '''
-        return False
-
-    def _section_url(self,url):
+    @classmethod
+    def get_section_url(cls,url):
         '''
         For adapters that have story URLs that can change.  This is
         applied both to the story URL (saved to metadata as
         sectionUrl) *and* any domain section names that it matches.
         So it is the adapter's responsibility to pass through
         *unchanged* any URLs that aren't its own.
+
+        In addition to using for INI sections, now also used for
+        reject list.
         '''
         return url
 
@@ -135,7 +133,7 @@ class BaseSiteAdapter(Configurable):
         self.host = self.parsedUrl.netloc
         self.path = self.parsedUrl.path
         self.story.setMetadata('storyUrl',self.url)
-        self.story.setMetadata('sectionUrl',self._section_url(self.url))
+        self.story.setMetadata('sectionUrl',self.get_section_url(self.url))
 
     # Limit chapters to download.  Input starts at 1, list starts at 0
     def setChaptersRange(self,first=None,last=None):
@@ -193,7 +191,7 @@ class BaseSiteAdapter(Configurable):
         self.story.setMetadata('numChapters', self.num_chapters())
 
     # Does the download the first time it's called.
-    def getStory(self):
+    def getStory(self, notification=lambda x,y:x):
         if not self.storyDone:
             self.getStoryMetadataOnly(get_cover=True)
 
@@ -201,6 +199,9 @@ class BaseSiteAdapter(Configurable):
             if self.oldchaptersmap:
                 self.oldchaptersmap = dict((self.normalize_chapterurl(key), value) for (key, value) in self.oldchaptersmap.items())
 
+            percent = 0.0
+            per_step = 1.0/self.story.getChapterCount()
+            # logger.debug("self.story.getChapterCount():%s per_step:%s"%(self.story.getChapterCount(),per_step))
             for index, chap in enumerate(self.chapterUrls):
                 title = chap['title']
                 url = chap['url']
@@ -218,11 +219,11 @@ class BaseSiteAdapter(Configurable):
                             # logger.debug(self.oldchaptersmap[url])
                             data = self.utf8FromSoup(None,
                                                      self.oldchaptersmap[url],
-                                                     partial(cachedfetch,self._fetchUrlRaw,self.oldimgs))
+                                                     partial(cachedfetch,self.get_request_raw,self.oldimgs))
                     elif self.oldchapters and index < len(self.oldchapters):
                         data = self.utf8FromSoup(None,
                                                  self.oldchapters[index],
-                                                 partial(cachedfetch,self._fetchUrlRaw,self.oldimgs))
+                                                 partial(cachedfetch,self.get_request_raw,self.oldimgs))
 
                     if self.getConfig('mark_new_chapters') == 'true':
                         # if already marked new -- ie, origtitle and title don't match
@@ -259,10 +260,11 @@ class BaseSiteAdapter(Configurable):
                         else:
                             raise
 
+                    percent += per_step
+                    notification(percent,self.url)
                     passchap['url'] = url
                     passchap['title'] = title
                     passchap['html'] = data
-
                 ## XXX -- add chapter text replacement here?
                 self.story.addChapter(passchap, newchap)
             self.storyDone = True
@@ -275,7 +277,7 @@ class BaseSiteAdapter(Configurable):
                                      #self.getConfig('default_cover_image'),
                                      self.story.formatFileName(self.getConfig('default_cover_image'),
                                                                self.getConfig('allow_unsafe_filename')),
-                                     self._fetchUrlRaw,
+                                     self.get_request_raw,
                                      cover=True)
                 self.story.setMetadata('cover_image','default')
 
@@ -295,7 +297,16 @@ class BaseSiteAdapter(Configurable):
 
     def getStoryMetadataOnly(self,get_cover=True):
         if not self.metadataDone:
-            self.doExtractChapterUrlsAndMetadata(get_cover=get_cover)
+            try:
+                ## virtually all adapters were catching 404s during
+                ## metdata fetch and raising StoryDoesNotExist.
+                ## Consolidate in one place.
+                self.doExtractChapterUrlsAndMetadata(get_cover=get_cover)
+            except HTTPErrorFFF as e:
+                if e.status_code in (404, 410) :
+                    raise StoryDoesNotExist(self.url)
+                else:
+                    raise
             ## Due to some adapters calling getMetadata()etc, values
             ## may have been cached during metadata collection and
             ## *before* other values that their replace_metadata
@@ -390,12 +401,14 @@ class BaseSiteAdapter(Configurable):
         collecting metadata.  That isn't needed while *just*
         collecting metadata in FG in plugin.  Those few will override
         this instead of extractChapterUrlsAndMetadata()
+
+        404s and 410s caught from doExtractChapterUrlsAndMetadata will
+        be changed to StoryDoesNotExist.
         '''
         return self.extractChapterUrlsAndMetadata()
 
     def extractChapterUrlsAndMetadata(self):
         "Needs to be overriden in each adapter class.  Populates self.story metadata"
-        pass
 
     def getChapterTextNum(self, url, index):
         "For adapters that also want to know the chapter index number."
@@ -403,7 +416,6 @@ class BaseSiteAdapter(Configurable):
 
     def getChapterText(self, url):
         "Needs to be overriden in each adapter class."
-        pass
 
     def before_get_urls_from_page(self,url,normalize):
         ## some sites need a login or other prep for 'from page' to
@@ -424,7 +436,7 @@ class BaseSiteAdapter(Configurable):
         self.before_get_urls_from_page(url,normalize)
 
         # this way it uses User-Agent or other special settings.
-        data = self._fetchUrl(url,usecache=True)
+        data = self.get_request(url,usecache=True)
         series = self.get_series_from_page(url,data,normalize)
         if series:
             # just to make it easier for adapters.
@@ -546,7 +558,7 @@ class BaseSiteAdapter(Configurable):
 
     def setCoverImage(self,storyurl,imgurl):
         if self.getConfig('include_images'):
-            return self.story.addImgUrl(storyurl,imgurl,self._fetchUrlRaw,cover=True,
+            return self.story.addImgUrl(storyurl,imgurl,self.get_request_raw,cover=True,
                                         coverexclusion=self.getConfig('cover_exclusion_regexp'))
         else:
             return (None,None)
@@ -578,7 +590,7 @@ class BaseSiteAdapter(Configurable):
 
     def _do_utf8FromSoup(self,url,soup,fetch=None,allow_replace_br_with_p=True):
         if not fetch:
-            fetch=self._fetchUrlRaw
+            fetch=self.get_request_raw
 
         acceptable_attributes = self.getConfigList('keep_html_attrs',['href','name','class','id','data-orighref'])
 

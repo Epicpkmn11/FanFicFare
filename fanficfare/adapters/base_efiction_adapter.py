@@ -28,7 +28,6 @@ from .. import exceptions as exceptions
 
 # py2 vs py3 transition
 from ..six import text_type as unicode
-from ..six.moves.urllib.error import HTTPError
 
 from .base_adapter import BaseSiteAdapter, makeDate
 
@@ -65,7 +64,6 @@ class BaseEfictionAdapter(BaseSiteAdapter):
     def __init__(self, config, url):
         BaseSiteAdapter.__init__(self, config, url)
         self.story.setMetadata('siteabbrev',self.getSiteAbbrev())
-        self.set_decode(self.getEncoding())
         storyId = re.compile(self.getSiteURLPattern()).match(self.url).group('storyId')
         self.story.setMetadata('storyId', storyId)
         self._setURL(self.getViewStoryUrl(storyId))
@@ -209,7 +207,7 @@ class BaseEfictionAdapter(BaseSiteAdapter):
                 or getMessageThereIsNoSuchAccount in html \
                 or getMessageWrongPassword in html
 
-    def _fetch_to_soup(self, url):
+    def _fetch_to_soup(self, url, usecache=False):
         """
         Fetch a HTML document, fix it and parse it to BeautifulSoup.
 
@@ -217,13 +215,7 @@ class BaseEfictionAdapter(BaseSiteAdapter):
 
         Makes image links absolute so they can be downloaded
         """
-        try:
-            html = self._fetchUrl(url)
-        except HTTPError as e:
-            if e.code == 404:
-                raise exceptions.StoryDoesNotExist(self.url)
-            else:
-                raise e
+        html = self.get_request(url,usecache=usecache)
 
         # Some site use old, old-school Comments <!- comment -> (single dash)
         html = re.sub("<!-.+?->", "", html)
@@ -261,7 +253,7 @@ class BaseEfictionAdapter(BaseSiteAdapter):
 
         logger.debug("Will now login to URL (%s) as (%s)" % (self.getLoginUrl(), params['penname']))
 
-        d = self._fetchUrl(self.getLoginUrl(), params)
+        d = self.post_request(self.getLoginUrl(), params)
 
         if self.getMessageMemberAccount() not in d : #Member Account
             logger.info("Failed to login to URL <%s> as '%s'" % (self.getLoginUrl(), params['penname']))
@@ -358,7 +350,10 @@ class BaseEfictionAdapter(BaseSiteAdapter):
             # In many eFiction sites, the Rating is not included in
             # print page, but is on the TOC page.
             toc = self.url + "&index=1"
-            soup = self.make_soup(self._fetchUrl(toc))
+            ## Because this is down in here, get_request(toc) is
+            ## called a bunch of times.  BasicCache takes care of it,
+            ## but it can be disconcerting to see in the log.
+            soup = self.make_soup(self.get_request(toc))
             for label in soup.find_all('span', {'class':'label'}):
                 if 'Rated:' in label or 'Rating:' in label:
                     self.story.setMetadata('rating',stripHTML(label.next_sibling))
@@ -382,7 +377,7 @@ class BaseEfictionAdapter(BaseSiteAdapter):
             if self.getMessageRegisteredUsersOnly() in errorDiv.prettify():
                 if not self.triedLoggingIn:
                     self.performLogin(self.url)
-                    soup = self._fetch_to_soup(printUrl)
+                    soup = self._fetch_to_soup(printUrl,usecache=False)
                     errorDiv = soup.find("div", "errortext")
                     self.triedLoggingIn = True
                 else:

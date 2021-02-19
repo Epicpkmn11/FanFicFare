@@ -52,14 +52,10 @@ class TestSiteAdapter(BaseSiteAdapter):
     def getSiteURLPattern(self):
         return BaseSiteAdapter.getSiteURLPattern(self)+r'/?\?sid=\d+$'
 
-    def use_pagecache(self):
-        return True
-
     def extractChapterUrlsAndMetadata(self):
         logger.debug('extractChapterUrlsAndMetadata: %s' % self.url)
         idstr = self.story.getMetadata('storyId')
         idnum = int(idstr)
-        self.do_sleep()
 
         if idnum >= 1000:
             logger.warning("storyId:%s - Custom INI data will be used."%idstr)
@@ -92,7 +88,7 @@ class TestSiteAdapter(BaseSiteAdapter):
             return
 
         if idnum >= 700 and idnum <= 710:
-            self._setURL('http://test1.com?sid=%s'%(idnum+100))
+            self._setURL('http://'+self.getSiteDomain()+'?sid=%s'%(idnum+100))
             self.story.setMetadata('storyId',self.parsedUrl.query.split('=',)[1])
             idstr = self.story.getMetadata('storyId')
             idnum = int(idstr)
@@ -116,12 +112,13 @@ class TestSiteAdapter(BaseSiteAdapter):
         if idstr == '668' and self.username != "Me" :
             raise exceptions.FailedToLogin(self.url,self.username)
 
+        prefix = self.getSiteDomain() if self.getSiteDomain() != 'test1.com' else ""
         if idstr == '664':
-            self.story.setMetadata(u'title',"Test Story Title "+idstr+self.crazystring+"&nbsp;&nbsp;")
-            self.story.setMetadata('author','Test Author aa bare amp(&) quote(&#39;) amp(&amp;)')
+            self.story.setMetadata(u'title',prefix+"Test Story Title "+idstr+self.crazystring+"&nbsp;&nbsp;")
+            self.story.setMetadata('author',prefix+'Test Author aa bare amp(&) quote(&#39;) amp(&amp;)')
         else:
-            self.story.setMetadata(u'title',"Test Story Title "+idstr)
-            self.story.setMetadata('author','Test Author aa')
+            self.story.setMetadata(u'title',prefix+"Test Story Title "+idstr)
+            self.story.setMetadata('author',prefix+'Test Author aa')
         self.setDescription(self.url,u'<div>Description '+self.crazystring+u''' Done
 <p>
 Some more longer description.  "I suck at summaries!"  "Better than it sounds!"  "My first fic"
@@ -150,13 +147,13 @@ Some more longer description.  "I suck at summaries!"  "Better than it sounds!" 
                 }
             self.story.setMetadata('language',langs[idnum%len(langs)])
             self.setSeries('The Great Test',idnum)
-            self.story.setMetadata('seriesUrl','http://test1.com/seriesid=1')
+            self.story.setMetadata('seriesUrl','http://'+self.getSiteDomain()+'/seriesid=1')
         elif idnum < 20:
             self.setSeries('魔法少女まどか★マギカ',idnum)
-            self.story.setMetadata('seriesUrl','http://test1.com/seriesid=1')
+            self.story.setMetadata('seriesUrl','http://'+self.getSiteDomain()+'/seriesid=1')
         if idnum == 0:
             self.setSeries("A Nook Hyphen Test "+self.story.getMetadata('dateCreated'),idnum)
-            self.story.setMetadata('seriesUrl','http://test1.com/seriesid=0')
+            self.story.setMetadata('seriesUrl','http://'+self.getSiteDomain()+'/seriesid=0')
 
         self.story.setMetadata('rating','Tweenie')
 
@@ -298,33 +295,25 @@ Some more longer description.  "I suck at summaries!"  "Better than it sounds!" 
                     ('Chapter 6',self.url+"&chapter=7"),
                     ('Chapter 7',self.url+"&chapter=8"),
                     ('Chapter 8',self.url+"&chapter=9"),
-                    #('Chapter 9',self.url+"&chapter=0"),
-                    #('Chapter 0',self.url+"&chapter=a"),
-                    #('Chapter a',self.url+"&chapter=b"),
-                    #('Chapter b',self.url+"&chapter=c"),
-                    #('Chapter c',self.url+"&chapter=d"),
-                    #('Chapter d',self.url+"&chapter=e"),
-                    #('Chapter e',self.url+"&chapter=f"),
-                    #('Chapter f',self.url+"&chapter=g"),
-                    #('Chapter g',self.url+"&chapter=h"),
-                    #('Chapter h',self.url+"&chapter=i"),
-                    #('Chapter i',self.url+"&chapter=j"),
-                    #('Chapter j',self.url+"&chapter=k"),
-                    #('Chapter k',self.url+"&chapter=l"),
-                    #('Chapter l',self.url+"&chapter=m"),
-                    #('Chapter m',self.url+"&chapter=n"),
-                    #('Chapter n',self.url+"&chapter=o"),
                     ]
+        if self.getSiteDomain() == 'test4.com':
+            for i in range(9,idnum):
+                chapters.append(('Chapter %s'%i,
+                                 self.url+"&chapter=%s"%i))
         for c in chapters:
             self.add_chapter(c[0],c[1],{'test':'asdf'})
 
 
     def getChapterText(self, url):
         logger.debug('Getting chapter text from: %s' % url)
-        self.do_sleep()
-        if self.story.getMetadata('storyId').startswith('670') or \
-                self.story.getMetadata('storyId').startswith('672'):
-            time.sleep(1.0)
+        if( self.getConfig('slow_down_sleep_time',False)
+            or self.story.getMetadata('storyId').startswith('670')
+            or self.story.getMetadata('storyId').startswith('672') ):
+            import random
+            t = float(self.getConfig('slow_down_sleep_time',1.0))
+            rt = random.uniform(t*0.5, t*1.5)
+            logger.debug("random sleep(%0.2f-%0.2f):%0.2f"%(t*0.5, t*1.5,rt))
+            time.sleep(rt)
 
         if "chapter=1" in url :
             text=u'''
@@ -363,11 +352,10 @@ Some more longer description.  "I suck at summaries!"  "Better than it sounds!" 
 '''
         elif self.story.getMetadata('storyId') == '667' and "chapter=2" in url:
             raise exceptions.FailedToDownload("Error downloading Chapter: %s!" % url)
-        elif 'test1.com' not in url:
+        elif self.getSiteDomain() not in url:
             ## for chapter_urls setting.
             origurl = url
-            (data,opened) = self._fetchUrlOpened(url,extrasleep=2.0)
-            url = opened.geturl()
+            (data,url) = self.get_request_redirected(url)
             if '#' in origurl and '#' not in url:
                 url = url + origurl[origurl.index('#'):]
             if url != origurl:
@@ -443,7 +431,7 @@ Lorem ipsum dolor sit amet, consectetur adipisicing elit, sed do eiusmod tempor 
         return self.utf8FromSoup(url,soup)
 
     def get_urls_from_page(self,url,normalize):
-        logger.debug("Fake series test1.com")
+        logger.debug("Fake series "+self.getSiteDomain())
         '''
         This method is to make it easier for adapters to detect a
         series URL, pick out the series metadata and list of storyUrls
@@ -453,19 +441,38 @@ Lorem ipsum dolor sit amet, consectetur adipisicing elit, sed do eiusmod tempor 
         ## easiest way to get all the weird URL possibilities and stay
         ## up to date with future changes.
         return {'name':'The Great Test',
-                'desc':'<div>The Great Test Series of test1.com!</div>',
-                'urllist':['http://test1.com?sid=1',
-                           'http://test1.com?sid=2',
-                           'http://test1.com?sid=3',
-                           'http://test1.com?sid=4',
-                           'http://test1.com?sid=5',
-                           'http://test1.com?sid=6',
-                           'http://test1.com?sid=7',
-                           'http://test1.com?sid=8',
-                           'http://test1.com?sid=9',]
+                'desc':'<div>The Great Test Series of '+self.getSiteDomain()+'!</div>',
+                'urllist':['http://'+self.getSiteDomain()+'?sid=1',
+                           'http://'+self.getSiteDomain()+'?sid=2',
+                           'http://'+self.getSiteDomain()+'?sid=3',
+                           'http://'+self.getSiteDomain()+'?sid=4',
+                           'http://'+self.getSiteDomain()+'?sid=5',
+                           'http://'+self.getSiteDomain()+'?sid=6',
+                           'http://'+self.getSiteDomain()+'?sid=7',
+                           'http://'+self.getSiteDomain()+'?sid=8',
+                           'http://'+self.getSiteDomain()+'?sid=9',]
                 }
 
 
 def getClass():
     return TestSiteAdapter
 
+'''
+from __future__ import absolute_import
+import logging
+logger = logging.getLogger(__name__)
+
+from .adapter_test1 import TestSiteAdapter
+
+class Test2SiteAdapter(TestSiteAdapter):
+
+    def __init__(self, config, url):
+        TestSiteAdapter.__init__(self, config, url)
+
+    @staticmethod
+    def getSiteDomain():
+        return 'test2.com'
+
+def getClass():
+    return Test2SiteAdapter
+'''

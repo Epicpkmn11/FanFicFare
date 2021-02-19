@@ -8,7 +8,8 @@ __docformat__ = 'restructuredtext en'
 import logging
 logger = logging.getLogger(__name__)
 
-import re, os, traceback
+import os
+import re
 from collections import defaultdict
 from zipfile import ZipFile, ZIP_STORED, ZIP_DEFLATED
 from xml.dom.minidom import parseString
@@ -24,7 +25,8 @@ def get_dcsource(inputio):
     return get_update_data(inputio,getfilecount=False,getsoups=False)[0]
 
 def get_dcsource_chaptercount(inputio):
-    return get_update_data(inputio,getfilecount=True,getsoups=False)[:2] # (source,filecount)
+    ## getsoups=True to check for continue_on_chapter_error chapters.
+    return get_update_data(inputio,getfilecount=True,getsoups=True)[:2] # (source,filecount)
 
 def get_cover_data(inputio):
     # (oldcoverhtmlhref,oldcoverhtmltype,oldcoverhtmldata,oldcoverimghref,oldcoverimgtype,oldcoverimgdata)
@@ -164,6 +166,10 @@ def get_update_data(inputio,
                         currenturl = None
                         chapurl = soup.find('meta',{'name':'chapterurl'})
                         if chapurl:
+                            # logger.debug("chapurl['content']:%s"%chapurl['content'])
+                            if chapurl['content'] == "chapter url removed due to failure":
+                                # don't count/include continue_on_chapter_error chapters.
+                                continue
                             if chapurl['content'] not in urlsoups: # keep first found if more than one.
                             # print("Found chapurl['content']:%s"%chapurl['content'])
                                 currenturl = chapurl['content']
@@ -371,7 +377,7 @@ def reset_orig_chapters_epub(inputio,outfile):
                     changed = changed or entrychanged
 
                     if entrychanged:
-                        logger.debug("\nentrychanged:%s\n"%zf)
+                        # logger.debug("\nentrychanged:%s\n"%zf)
                         _replace_tocncx(tocncxdom,zf,chaptertoctitle)
                         if navxhtmldom:
                             _replace_navxhtml(navxhtmldom,zf,chaptertoctitle)

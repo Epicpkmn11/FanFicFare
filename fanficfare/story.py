@@ -19,10 +19,8 @@ from __future__ import absolute_import
 import os, re, sys
 from collections import defaultdict
 import string
-import json
 import datetime
 from math import floor
-from functools import partial
 import base64
 import hashlib
 import logging
@@ -33,13 +31,13 @@ from . import six
 from .six.moves.urllib.parse import (urlparse, urlunparse)
 from .six import text_type as unicode
 from .six import string_types as basestring
-from .six.moves import map
 
 import bs4
 
 from . import exceptions
 from .htmlcleanup import conditionalRemoveEntities, removeEntities, removeAllEntities
-from .configurable import Configurable, re_compile
+from .requestable import Requestable
+from .configurable import re_compile
 from .htmlheuristics import was_run_marker
 
 SPACE_REPLACE=r'\s'
@@ -446,10 +444,10 @@ def make_replacements(replace):
     # print("replace lines:%s"%len(retval))
     return retval
 
-class Story(Configurable):
+class Story(Requestable):
 
     def __init__(self, configuration):
-        Configurable.__init__(self, configuration)
+        Requestable.__init__(self, configuration)
         try:
             ## calibre plugin will set externally to match PI version.
             self.metadata = {'version':os.environ['CURRENT_VERSION_ID']}
@@ -462,8 +460,8 @@ class Story(Configurable):
         self.chapter_first = None
         self.chapter_last = None
         self.imgurls = []
-        self.imgtuples = []
-        self.imgsizes = defaultdict(list) # dict of img sizes -> lists of self.imgtuples indices
+        self.imginfo = []
+        self.imgsizes = defaultdict(list) # dict of img sizes -> lists of self.imginfo indices
         # save processed metadata, dicts keyed by 'key', then (removeentities,dorepl)
         # {'key':{(removeentities,dorepl):"value",(...):"value"},'key':... }
         self.processed_metadata_cache = {}
@@ -1314,16 +1312,16 @@ class Story(Configurable):
 
             # explicit cover, make the first image.
             if cover and cover_big_enough:
-                if len(self.imgtuples) > 0 and 'cover' in self.imgtuples[0]['newsrc']:
+                if len(self.imginfo) > 0 and 'cover' in self.imginfo[0]['newsrc']:
                     # remove existing cover, if there is one.
                     # could have only come from first image and is assumed index 0.
                     del self.imgurls[0]
-                    del self.imgtuples[0]
+                    del self.imginfo[0]
                 self.imgurls.insert(0,imgurl)
                 newsrc = "images/cover.%s"%ext
                 self.cover=newsrc
                 self.setMetadata('cover_image','specific')
-                self.imgtuples.insert(0,{'newsrc':newsrc,'mime':mime,'data':data})
+                self.imginfo.insert(0,{'newsrc':newsrc,'mime':mime,'data':data})
                 ## *Don't* include cover in imgsizes because it can be
                 ## replaced by Calibre etc.  So don't re-use it.
                 ## Also saves removing it above.
@@ -1332,11 +1330,11 @@ class Story(Configurable):
                 if self.getConfig('dedup_img_files',False):
                     same_sz_imgs = self.imgsizes[len(data)]
                     for szimg in same_sz_imgs:
-                        if data == self.imgtuples[szimg]['data']:
+                        if data == self.imginfo[szimg]['data']:
                             # matching data, duplicate file with a different URL.
-                            logger.debug("found duplicate image: %s, %s"%(self.imgtuples[szimg]['newsrc'],
+                            logger.debug("found duplicate image: %s, %s"%(self.imginfo[szimg]['newsrc'],
                                                                           self.imgurls[szimg]))
-                            return (self.imgtuples[szimg]['newsrc'],
+                            return (self.imginfo[szimg]['newsrc'],
                                     self.imgurls[szimg])
                 self.imgurls.append(imgurl)
                 # First image, copy not link because calibre will replace with it's cover.
@@ -1352,22 +1350,22 @@ class Story(Configurable):
                     newsrc = "images/cover.%s"%ext
                     self.cover=newsrc
                     self.setMetadata('cover_image','first')
-                    self.imgtuples.append({'newsrc':newsrc,'mime':mime,'data':data})
+                    self.imginfo.append({'newsrc':newsrc,'mime':mime,'data':data})
                     self.imgurls.append(imgurl)
                     ## *Don't* include cover in imgsizes because it can be
                     ## replaced by Calibre etc.  So don't re-use it.
-                    # self.imgsizes[len(data)].append(len(self.imgtuples)-1)
+                    # self.imgsizes[len(data)].append(len(self.imginfo)-1)
 
                 newsrc = "images/%s-%s.%s"%(
                     prefix,
                     self.imgurls.index(imgurl),
                     ext)
-                self.imgtuples.append({'newsrc':newsrc,'mime':mime,'data':data})
-                self.imgsizes[len(data)].append(len(self.imgtuples)-1)
+                self.imginfo.append({'newsrc':newsrc,'mime':mime,'data':data})
+                self.imgsizes[len(data)].append(len(self.imginfo)-1)
 
             # logger.debug("\n===============\nimgurl:%s\nnewsrc:%s\nimage size:%d %s\n============"%(imgurl,newsrc,len(data),self.imgsizes[len(data)]))
         else:
-            newsrc = self.imgtuples[self.imgurls.index(imgurl)]['newsrc']
+            newsrc = self.imginfo[self.imgurls.index(imgurl)]['newsrc']
 
         return (newsrc, imgurl)
 
@@ -1375,7 +1373,15 @@ class Story(Configurable):
         retlist = []
         for i, url in enumerate(self.imgurls):
             #parsedUrl = urlparse(url)
-            retlist.append(self.imgtuples[i])
+            retlist.append(self.imginfo[i])
+        for imgfn in self.getConfigList('additional_images'):
+            data = self.get_request_raw(imgfn)
+            (discarddata,ext,mime) = no_convert_image(imgfn,data)
+            retlist.append({
+                    'newsrc':"images/"+os.path.basename(imgfn),
+                    'mime':mime,
+                    'data':data,
+                    })
         return retlist
 
     def __str__(self):

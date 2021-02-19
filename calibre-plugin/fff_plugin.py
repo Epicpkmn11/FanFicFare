@@ -29,27 +29,28 @@ from .fanficfare.six import ensure_text, string_types, text_type as unicode
 import logging
 logger = logging.getLogger(__name__)
 
-import os, copy, threading, re, platform, sys
+import os
+import re
+import sys
+import threading
 from io import BytesIO
 from functools import partial
-from datetime import datetime, time, date
+from datetime import datetime, time
 from string import Template
-import email
 import traceback
+from collections import defaultdict
 
 try:
-    from PyQt5.Qt import (QApplication, QMenu, QTimer, Qt, QToolButton)
-    from PyQt5.QtCore import QBuffer
+    from PyQt5.Qt import (QApplication, QMenu, QTimer, QToolButton)
 except ImportError as e:
-    from PyQt4.Qt import (QApplication, QMenu, QTimer, Qt, QToolButton)
-    from PyQt4.QtCore import QBuffer
+    from PyQt4.Qt import (QApplication, QMenu, QTimer, QToolButton)
 
 from calibre.constants import numeric_version as calibre_version
 
 from calibre.ptempfile import PersistentTemporaryFile, PersistentTemporaryDirectory, remove_dir
 from calibre.ebooks.metadata import MetaInformation
 from calibre.ebooks.metadata.meta import get_metadata as calibre_get_metadata
-from calibre.gui2 import error_dialog, warning_dialog, question_dialog, info_dialog
+from calibre.gui2 import error_dialog, info_dialog, question_dialog
 from calibre.gui2.dialogs.message_box import ViewLog
 from calibre.gui2.dialogs.confirm_delete import confirm
 from calibre.utils.config import prefs as calibre_prefs
@@ -77,7 +78,7 @@ field_metadata = FieldMetadata()
 
 from calibre_plugins.fanficfare_plugin.common_utils import (
     set_plugin_icon_resources, get_icon, create_menu_action_unique,
-    get_library_uuid, busy_cursor)
+    busy_cursor)
 
 from calibre_plugins.fanficfare_plugin.fanficfare import (
     adapters, exceptions)
@@ -87,8 +88,8 @@ from calibre_plugins.fanficfare_plugin.fanficfare.epubutils import (
     get_story_url_from_zip_html, reset_orig_chapters_epub, get_cover_data)
 
 from calibre_plugins.fanficfare_plugin.fanficfare.geturls import (
-    get_urls_from_page, get_urls_from_html,get_urls_from_text,
-    get_urls_from_imap, get_urls_from_mime)
+    get_urls_from_page, get_urls_from_text,get_urls_from_imap,
+    get_urls_from_mime)
 
 from calibre_plugins.fanficfare_plugin.fff_util import (
     get_fff_adapter, get_fff_config, get_fff_personalini,
@@ -581,7 +582,7 @@ class FanFicFarePlugin(InterfaceAction):
             reject_list=set()
             if prefs['auto_reject_from_email']:
                 # need to normalize for reject list.
-                reject_list = set([x for x in url_list if rejecturllist.check(adapters.getNormalStoryURL(x))])
+                reject_list = set([x for x in url_list if rejecturllist.check(x)])
             url_list = url_list - reject_list
 
             ## feature for update-only - check url_list with
@@ -1101,7 +1102,9 @@ class FanFicFarePlugin(InterfaceAction):
             books = self.convert_urls_to_books(url_list)
 
         ## for tweak_fg_sleep
-        options['ffnetcount']=sum(1 for x in books if x['site']=='www.fanfiction.net')
+        d = options['site_counts'] = defaultdict(int)
+        for b in books:
+            d[b['site']] += 1
 
         options['version'] = self.version
         logger.debug(self.version)
@@ -1257,15 +1260,23 @@ class FanFicFarePlugin(InterfaceAction):
         adapter = get_fff_adapter(url,fileform)
         ## chapter range for title_chapter_range_pattern
         adapter.setChaptersRange(book['begin'],book['end'])
-        ## save and share cookiejar and pagecache between all
-        ## downloads.
+
+        ## save and share caches and cookiejar between all downloads.
         configuration = adapter.get_configuration()
-        if 'pagecache' not in options:
-            options['pagecache'] = configuration.get_empty_pagecache()
-        configuration.set_pagecache(options['pagecache'])
-        if 'cookiejar' not in options:
-            options['cookiejar'] = configuration.get_empty_cookiejar()
-        configuration.set_cookiejar(options['cookiejar'])
+        ## browser cache before basic to avoid incidentally reloading
+        if configuration.getConfig('use_browser_cache'):
+            if 'browser_cache' in options:
+                configuration.set_browser_cache(options['browser_cache'])
+            else:
+                options['browser_cache'] = configuration.get_browser_cache()
+        if 'basic_cache' in options:
+            configuration.set_basic_cache(options['basic_cache'])
+        else:
+            options['basic_cache'] = configuration.get_basic_cache()
+        if 'cookiejar' in options:
+            configuration.set_cookiejar(options['cookiejar'])
+        else:
+            options['cookiejar'] = configuration.get_cookiejar()
 
         if collision in (CALIBREONLY, CALIBREONLYSAVECOL):
             ## Getting metadata from configured column.
@@ -1296,20 +1307,20 @@ class FanFicFarePlugin(InterfaceAction):
             story = self.get_story_metadata_only(adapter)
             bgmeta = False
         else:
-            # reduce foreground sleep time for ffnet when few books.
-            if 'ffnetcount' in options and \
-                    adapter.getConfig('tweak_fg_sleep') and \
-                    adapter.getSiteDomain() == 'www.fanfiction.net':
-                minslp = float(adapter.getConfig('min_fg_sleep'))
-                maxslp = float(adapter.getConfig('max_fg_sleep'))
-                dwnlds = float(adapter.getConfig('max_fg_sleep_at_downloads'))
-                m = (maxslp-minslp) / (dwnlds-1)
-                b = minslp - m
-                slp = min(maxslp,m*float(options['ffnetcount'])+b)
-                #print("m:%s b:%s = %s"%(m,b,slp))
-                configuration.set_sleep(slp)
-
             if not bgmeta:
+                # reduce foreground sleep time for configured sites when few books.
+                if adapter.getConfig('tweak_fg_sleep'):
+                    minslp = float(adapter.getConfig('min_fg_sleep'))
+                    maxslp = float(adapter.getConfig('max_fg_sleep'))
+                    dwnlds = float(adapter.getConfig('max_fg_sleep_at_downloads'))
+                    m = (maxslp-minslp) / (dwnlds-1)
+                    b = minslp - m
+                    slp = min(maxslp,m*float(options['site_counts'][book['site']])+b)
+                    # logger.debug("tweak_fg_sleep count:%s"%options['site_counts'][book['site']])
+                    # logger.debug("m:%s b:%s = %s"%(m,b,slp))
+                    logger.debug("tweak_fg_sleep: Set FG sleep override time %s"%slp)
+                    configuration.set_sleep_override(slp)
+
                 story = self.get_story_metadata_only(adapter)
                 book['title'] = story.getMetadata('title')
                 book['author'] = [story.getMetadata('author')]
@@ -1687,21 +1698,43 @@ class FanFicFarePlugin(InterfaceAction):
                                      msgl)
             return
 
+        ## save and pass cookiejar and caches to BG downloads.
+        if 'browser_cache' in options:
+            if not options['bgmeta']:
+                ## With load-on-demand, the cache exists, but hasn't
+                ## been loaded.  Once it is (file)loaded in jobs, it's
+                ## marked as having been 'loaded'.  So don't send when
+                ## bgmeta
+                browser_cachefile = PersistentTemporaryFile(suffix='.browser_cache',
+                                                            dir=options['tdir'])
+                options['browser_cache'].save_cache(browser_cachefile.name)
+                options['browser_cachefile'] = browser_cachefile.name
+            ## can't be pickled by Calibre to send to BG proc
+            del options['browser_cache']
+
+        basic_cachefile = PersistentTemporaryFile(suffix='.basic_cache',
+                                                dir=options['tdir'])
+        options['basic_cache'].save_cache(basic_cachefile.name)
+        options['basic_cachefile'] = basic_cachefile.name
+        ## can't be pickled by Calibre to send to BG proc
+        del options['basic_cache']
+
         cookiejarfile = PersistentTemporaryFile(suffix='.cookiejar',
                                                 dir=options['tdir'])
-        options['cookiejar'].save(cookiejarfile.name,
-                                  ignore_discard=True,
-                                  ignore_expires=True)
+        ## assumed to be a LWPCookieJar
+        options['cookiejar'].save_cookiejar(cookiejarfile.name)
         options['cookiejarfile']=cookiejarfile.name
-        del options['cookiejar'] ## can't be pickled.
+        ## can't be pickled by Calibre to send to BG proc
+        del options['cookiejar']
 
         # pass the plugin path in for jobs.py to use for 'with:' to
         # get libs from plugin zip.
         options['plugin_path'] = self.interface_action_base_plugin.plugin_path
 
         func = 'arbitrary_n'
+        cpus = self.gui.job_manager.server.pool_size
         args = ['calibre_plugins.fanficfare_plugin.jobs', 'do_download_worker',
-                (book_list, options, merge)]
+                (book_list, options, cpus, merge)]
         desc = _('Download %s FanFiction Book(s)') % sum(1 for x in book_list if x['good'])
         job = self.gui.job_manager.run_job(
                 self.Dispatcher(partial(self.download_list_completed,options=options,merge=merge)),
@@ -2198,7 +2231,6 @@ class FanFicFarePlugin(InterfaceAction):
                             mi.__setattr__(col,oldmi.__getattribute__(col))
                         except AttributeError:
                             logger.warn("AttributeError? %s"%col)
-                            pass
 
         ## fix for suppressauthorsort (Force Author into Author Sort)
         ## option overriding Author-New-Only setting.  not done where

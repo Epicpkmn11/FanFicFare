@@ -20,27 +20,14 @@ from __future__ import print_function
 from io import StringIO
 from optparse import OptionParser, SUPPRESS_HELP
 from os.path import expanduser, join, dirname
-from os import access, R_OK
 from subprocess import call
 import getpass
 import logging
 import pprint
 import string
 import os, sys
-import pickle
 
-if sys.version_info < (2, 7):
-    sys.exit('This program requires Python 2.7 or newer.')
-elif sys.version_info < (3, 0):
-    reload(sys)  # Reload restores 'hidden' setdefaultencoding method
-    sys.setdefaultencoding("utf-8")
-    def pickle_load(f):
-        return pickle.load(f)
-else: # > 3.0
-    def pickle_load(f):
-        return pickle.load(f,encoding="bytes")
-
-version="3.29.4"
+version="4.0.0"
 os.environ['CURRENT_VERSION_ID']=version
 
 global_cache = 'global_cache'
@@ -63,7 +50,6 @@ try:
         get_dcsource_chaptercount, get_update_data, reset_orig_chapters_epub)
     from calibre_plugins.fanficfare_plugin.fanficfare.geturls import get_urls_from_page, get_urls_from_imap
     from calibre_plugins.fanficfare_plugin.fanficfare.six.moves import configparser
-    from calibre_plugins.fanficfare_plugin.fanficfare.six.moves import http_cookiejar as cl
     from calibre_plugins.fanficfare_plugin.fanficfare.six import text_type as unicode
 except ImportError:
     from fanficfare import adapters, writers, exceptions
@@ -72,7 +58,6 @@ except ImportError:
         get_dcsource_chaptercount, get_update_data, reset_orig_chapters_epub)
     from fanficfare.geturls import get_urls_from_page, get_urls_from_imap
     from fanficfare.six.moves import configparser
-    from fanficfare.six.moves import http_cookiejar as cl
     from fanficfare.six import text_type as unicode
 
 def write_story(config, adapter, writeformat,
@@ -190,6 +175,7 @@ def main(argv=None,
                       action='store_true', dest='save_cache',
                       help=SUPPRESS_HELP, )
     ## 'undocumented' feature to allow expired/unverified SSL certs pass.
+    ## removed in favor of use_ssl_unverified_context ini setting.
     parser.add_option('--unverified_ssl',
                       action='store_true', dest='unverified_ssl',
                       help=SUPPRESS_HELP, )
@@ -197,10 +183,8 @@ def main(argv=None,
     options, args = parser.parse_args(argv)
 
     if options.unverified_ssl:
-        logger.warning("Running with unverified SSL context(--unverified_ssl), security may be compromised.")
-        import ssl
-        if hasattr(ssl, '_create_unverified_context'):
-            ssl._create_default_https_context = ssl._create_unverified_context
+        print("Option --unverified_ssl removed.\nSet use_ssl_unverified_context:true in ini file or --option instead.")
+        return
 
     if not options.debug:
         logger.setLevel(logging.WARNING)
@@ -248,17 +232,6 @@ def main(argv=None,
                                            options.downloadlist))):
         parser.print_help();
         return
-
-    if options.save_cache:
-        try:
-            with open(global_cache,'rb') as jin:
-                options.pagecache = pickle_load(jin)
-            options.cookiejar = cl.LWPCookieJar()
-            options.cookiejar.load(global_cookies)
-        except Exception as e:
-            ## This is not uncommon, will happen when starting a new
-            ## cache, for example.
-            print("Didn't load --save-cache %s"%e)
 
     if options.list:
         configuration = get_configuration(options.list,
@@ -325,7 +298,6 @@ def main(argv=None,
                                 options,
                                 passed_defaultsini,
                                 passed_personalini)
-                    # print("pagecache:%s"%options.pagecache.keys())
                 except Exception as e:
                     if len(urls) == 1:
                         raise
@@ -522,7 +494,7 @@ def do_download(arg,
             print(json.dumps(metadata, sort_keys=True,
                              indent=2, separators=(',', ':')))
         if adapter.story.chapter_error_count > 0:
-            print("%s chapters errored downloading %s"%(adapter.story.chapter_error_count,
+            print("===================\n!!!! %s chapters errored downloading %s !!!!\n==================="%(adapter.story.chapter_error_count,
                                                         url))
         del adapter
 
@@ -542,13 +514,15 @@ def get_configuration(url,
                       chaptercount=None,
                       output_filename=None):
     try:
-        configuration = Configuration(adapters.getConfigSectionsFor(url), options.format)
+        configuration = Configuration(adapters.getConfigSectionsFor(url),
+                                      options.format)
     except exceptions.UnknownSite as e:
         if options.list or options.normalize or options.downloadlist:
             # list for page doesn't have to be a supported site.
-            configuration = Configuration(['unknown'], options.format)
+            configuration = Configuration(['unknown'],
+                                          options.format)
         else:
-            raise e
+            raise
 
     conflist = []
     homepath = join(expanduser('~'), '.fanficdownloader')
@@ -612,18 +586,44 @@ def get_configuration(url,
     if options.progressbar:
         configuration.set('overrides','progressbar','true')
 
-    ## Share pagecache and cookiejar between multiple downloads.
-    if not hasattr(options,'pagecache'):
-        options.pagecache = configuration.get_empty_pagecache()
-    if not hasattr(options,'cookiejar'):
-        options.cookiejar = configuration.get_empty_cookiejar()
-    if options.save_cache:
-        save_cache = global_cache
-        save_cookies = global_cookies
+    ## do page cache and cookie load after reading INI files because
+    ## settings (like use_basic_cache) matter.
+
+    ## only need browser cache if one of the URLs needs it, and it
+    ## isn't saved or dependent on options.save_cache.  This needs to
+    ## be above basic_cache to avoid loading more than once anyway.
+    if configuration.getConfig('use_browser_cache'):
+        if not hasattr(options,'browser_cache'):
+            configuration.get_fetcher() # force browser cache read.
+            options.browser_cache = configuration.get_browser_cache()
+        else:
+            configuration.set_browser_cache(options.browser_cache)
+
+    ## Share basic_cache between multiple downloads.
+    if not hasattr(options,'basic_cache'):
+        options.basic_cache = configuration.get_basic_cache()
+        if options.save_cache:
+            try:
+                options.basic_cache.load_cache(global_cache)
+            except Exception as e:
+                logger.warning("Didn't load --save-cache %s\nContinue without loading BasicCache"%e)
+            options.basic_cache.set_autosave(True,filename=global_cache)
     else:
-        save_cache = save_cookies = None
-    configuration.set_pagecache(options.pagecache,save_cache)
-    configuration.set_cookiejar(options.cookiejar,save_cookies)
+        configuration.set_basic_cache(options.basic_cache)
+    # logger.debug(options.basic_cache.basic_cache.keys())
+
+    ## All CLI downloads are sequential and share one cookiejar,
+    ## loaded the first time through here.
+    if not hasattr(options,'cookiejar'):
+        options.cookiejar = configuration.get_cookiejar()
+        if options.save_cache:
+            try:
+                options.cookiejar.load_cookiejar(global_cookies)
+            except Exception as e:
+                logger.warning("Didn't load --save-cache %s\nContinue without loading cookies"%e)
+            options.cookiejar.set_autosave(True,filename=global_cookies)
+    else:
+        configuration.set_cookiejar(options.cookiejar)
 
     return configuration
 
