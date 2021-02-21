@@ -48,7 +48,7 @@ class MangaDexOrgAdapter(BaseSiteAdapter):
         if m:
             # Chapter URLs don't have the story ID, so get it from the API
             if m.group("novchap") == "chapter":
-                self.story.setMetadata("storyId", str(json.loads(self._fetchUrl("https://" + self.getSiteDomain() + "/api/v2/chapter/" + m.group("id")))["data"]["mangaId"]))
+                self.story.setMetadata("storyId", str(json.loads(self.get_request("https://" + self.getSiteDomain() + "/api/v2/chapter/" + m.group("id")))["data"]["mangaId"]))
             # Normal story URL, just set the story ID
             else:
                 self.story.setMetadata("storyId", m.group("id"))
@@ -91,13 +91,13 @@ class MangaDexOrgAdapter(BaseSiteAdapter):
         logger.info("url: "+url)
 
         try:
-            data = json.loads(self._fetchUrl(url))["data"]
+            data = json.loads(self.get_request(url))["data"]
 
             if data["isHentai"] and not (self.is_adult or self.getConfig("is_adult")):
                 raise exceptions.AdultCheckRequired(self.url)
 
-            chapters = json.loads(self._fetchUrl(chaptersurl))["data"]
-            tags = json.loads(self._fetchUrl(tagsurl))["data"]
+            chapters = json.loads(self.get_request(chaptersurl))["data"]
+            tags = json.loads(self.get_request(tagsurl))["data"]
 
         except HTTPError as e:
             if e.code == 404:
@@ -237,7 +237,7 @@ class MangaDexOrgAdapter(BaseSiteAdapter):
         ## need soup for .new_tag()
         div=soup.find('div')
 
-        data=json.loads(self._fetchUrl(url))["data"]
+        data=json.loads(self.get_request(url))["data"]
         for page in data["pages"]:
             img=soup.new_tag("img")
             img["src"]=data["server"] + data["hash"] + "/" + page
