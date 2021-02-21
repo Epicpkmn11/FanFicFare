@@ -1,6 +1,10 @@
 [FanFicFare](https://github.com/JimmXinu/FanFicFare)
 ==========
 
+Note: This is a fork with Manga Dex added for my own personal use. It's kept as a fork as it was decided to be outside of the scope of FanFicFare, please use the official version as it's properly kept up to date and such.
+
+---
+
 FanFicFare makes reading stories from various websites much easier by helping
 you download them to EBook files.
 
