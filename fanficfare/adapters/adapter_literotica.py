@@ -108,7 +108,7 @@ class LiteroticaSiteAdapter(BaseSiteAdapter):
 
     def getCategories(self, soup):
         if self.getConfig("use_meta_keywords"):
-            categories = soup.find("meta", {"name":"keywords"})['content'].split(', ')
+            categories = soup.find("meta", {"name":"keywords"})['content'].split(',')
             categories = [c for c in categories if not self.story.getMetadata('title') in c]
             if self.story.getMetadata('author') in categories:
                 categories.remove(self.story.getMetadata('author'))
@@ -154,13 +154,15 @@ class LiteroticaSiteAdapter(BaseSiteAdapter):
             raise exceptions.StoryDoesNotExist("This submission is awaiting moderator's approval. %s"%self.url)
 
         # author
-        a = soup1.find("span", "b-story-user-y")
-        self.story.setMetadata('authorId', urlparse.parse_qs(a.a['href'].split('?')[1])['uid'][0])
-        authorurl = a.a['href']
+        authora = soup1.find("a", class_="y_eU")
+        authorurl = authora['href']
+        # logger.debug(authora)
+        # logger.debug(authorurl)
+        self.story.setMetadata('authorId', urlparse.parse_qs(authorurl.split('?')[1])['uid'][0])
         if authorurl.startswith('//'):
             authorurl = self.parsedUrl.scheme+':'+authorurl
         self.story.setMetadata('authorUrl', authorurl)
-        self.story.setMetadata('author', a.text)
+        self.story.setMetadata('author', authora.text)
 
         # get the author page
         dataAuth = self.get_request(authorurl)
@@ -226,26 +228,30 @@ class LiteroticaSiteAdapter(BaseSiteAdapter):
             descriptions = []
             ratings = []
             chapters = []
+            chapter_name_type = None
             while chapterTr is not None and 'sl' in chapterTr['class']:
                 description = "%d. %s" % (len(descriptions)+1,stripHTML(chapterTr.findAll("td")[1]))
                 description = stripHTML(chapterTr.findAll("td")[1])
                 chapterLink = chapterTr.find("td", "fc").find("a")
                 if self.getConfig('chapter_categories_use_all'):
                     self.story.addToList('category', chapterTr.findAll("td")[2].text)
-                self.story.addToList('eroticatags', chapterTr.findAll("td")[2].text)
+                # self.story.addToList('eroticatags', chapterTr.findAll("td")[2].text)
                 pub_date = makeDate(chapterTr.findAll('td')[-1].text, self.dateformat)
                 dates.append(pub_date)
                 chapterTr = chapterTr.nextSibling
 
                 chapter_title = chapterLink.text
                 if self.getConfig("clean_chapter_titles"):
-                    # logger.debug('\tChapter Name: "%s"' % chapterLink.string)
                     # logger.debug('\tChapter Name: "%s"' % chapterLink.text)
                     if chapterLink.text.lower().startswith(seriesTitle.lower()):
                         chapter = chapterLink.text[len(seriesTitle):].strip()
                         # logger.debug('\tChapter: "%s"' % chapter)
                         if chapter == '':
                             chapter_title = 'Chapter %d' % (self.num_chapters() + 1)
+                            # Sometimes the first chapter does not have type of chapter 
+                            if self.num_chapters() == 0:
+                                logger.debug('\tChapter: first chapter without chapter type')
+                                chapter_name_type = None
                         else:
                             separater_char = chapter[0]
                             # logger.debug('\tseparater_char: "%s"' % separater_char)
@@ -257,14 +263,19 @@ class LiteroticaSiteAdapter(BaseSiteAdapter):
                                     chapter_title = 'Chapter %d' % int(chapter)
                                 except:
                                     chapter_title = 'Chapter %s' % chapter
+                                chapter_name_type = 'Chapter' if chapter_name_type is None else chapter_name_type
+                                logger.debug('\tChapter: chapter_name_type="%s"' % chapter_name_type)
                             elif chapter.lower().startswith('pt.'):
                                 chapter = chapter[len('pt.'):]
                                 try:
                                     chapter_title = 'Part %d' % int(chapter)
                                 except:
                                     chapter_title = 'Part %s' % chapter
+                                chapter_name_type = 'Part' if chapter_name_type is None else chapter_name_type
+                                logger.debug('\tChapter: chapter_name_type="%s"' % chapter_name_type)
                             elif separater_char in [":", "-"]:
                                 chapter_title = chapter
+                                logger.debug('\tChapter: taking chapter text as whole')
 
                 # pages include full URLs.
                 chapurl = chapterLink['href']
@@ -282,6 +293,18 @@ class LiteroticaSiteAdapter(BaseSiteAdapter):
                     ratings.append(float(numrating))
                 except:
                     pass
+
+            if self.getConfig("clean_chapter_titles") \
+                and chapter_name_type is not None \
+                and not chapters[0][0].startswith(chapter_name_type):
+                logger.debug('\tChapter: chapter_name_type="%s"' % chapter_name_type)
+                logger.debug('\tChapter: first chapter="%s"' % chapters[0][0])
+                logger.debug('\tChapter: first chapter number="%s"' % chapters[0][0][len('Chapter'):])
+                chapters[0] = ("%s %s" % (chapter_name_type, chapters[0][0][len('Chapter'):].strip()),
+                               chapters[0][1],
+                               chapters[0][2],
+                               chapters[0][3]
+                               )
 
             chapters = sorted(chapters, key=lambda chapter: chapter[3])
             for i, chapter in enumerate(chapters):
@@ -307,7 +330,7 @@ class LiteroticaSiteAdapter(BaseSiteAdapter):
 
 
         # Add the category from the breadcumb. This might duplicate a category already added.
-        self.story.addToList('category', soup1.find('div', 'b-breadcrumbs').findAll('a')[1].string)
+        self.story.addToList('category', soup1.find('div', id='BreadCrumbComponent').findAll('a')[1].string)
         self.getCategories(soup1)
 
         return
@@ -320,7 +343,7 @@ class LiteroticaSiteAdapter(BaseSiteAdapter):
 #         logger.debug("\tChapter text: %s" % raw_page)
         page_soup = self.make_soup(raw_page)
         [comment.extract() for comment in page_soup.findAll(text=lambda text:isinstance(text, Comment))]
-        story2 = page_soup.find('div', 'b-story-body-x').div
+        story2 = page_soup.find('div', 'aa_ht').div
 #         logger.debug('getPageText - story2: %s' % story2)
 
         fullhtml = unicode(story2)
@@ -338,8 +361,7 @@ class LiteroticaSiteAdapter(BaseSiteAdapter):
 
         raw_page = self.get_request(url)
         page_soup = self.make_soup(raw_page)
-        pages = page_soup.find('select', {'name' : 'page'})
-        page_nums = [page.text for page in pages.findAll('option')] if pages else 0
+        pages = page_soup.find('div',class_='l_bH')
 
         fullhtml = ""
         self.getCategories(page_soup)
@@ -350,7 +372,13 @@ class LiteroticaSiteAdapter(BaseSiteAdapter):
             chapter_description = '<p><b>Description:</b> %s</p><hr />' % chapter_description
         fullhtml += self.getPageText(raw_page, url)
         if pages:
-            for page_no in range(2, len(page_nums) + 1):
+            ## look for highest numbered page, they're not all listed
+            ## when there are many.
+
+            last_page_link = pages.find_all('a', class_='l_bJ')[-1]
+            last_page_no = int(urlparse.parse_qs(last_page_link['href'].split('?')[1])['page'][0])
+            # logger.debug(last_page_no)
+            for page_no in range(2, last_page_no+1):
                 page_url = url +  "?page=%s" % page_no
                 # logger.debug("page_url= %s" % page_url)
                 raw_page = self.get_request(page_url)

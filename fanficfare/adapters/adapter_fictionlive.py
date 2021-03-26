@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 from .base_adapter import BaseSiteAdapter
 from ..htmlcleanup import stripHTML
 from .. import exceptions as exceptions
-
+from ..six import ensure_text
 
 def getClass():
     return FictionLiveAdapter
@@ -156,9 +156,7 @@ class FictionLiveAdapter(BaseSiteAdapter):
 
         show_spoiler_tags = self.getConfig('show_spoiler_tags')
         spoiler_tags = data['spoilerTags'] if 'spoilerTags' in data else []
-        for tag in tags[:5]:
-            self.story.addToList('key_tags', tag)
-        for tag in tags[5:]:
+        for tag in tags:
             if show_spoiler_tags or not tag in spoiler_tags:
                 self.story.addToList('tags', tag)
 
@@ -246,7 +244,7 @@ class FictionLiveAdapter(BaseSiteAdapter):
         titles = ["Home"] + titles
 
         times = [c['ct'] for c in maintext]
-        times = [data['ct']] + times + [self.most_recent_chunk + 1]
+        times = [data['ct']] + times + [self.most_recent_chunk + 2] # need to be 1 over, and add_url etc does -1
 
         # doesn't actually run without the call to list.
         list(map(add_chapter_url, titles, pair(times)))
@@ -297,7 +295,7 @@ class FictionLiveAdapter(BaseSiteAdapter):
             show_timestamps = self.getConfig('show_timestamps')
             if show_timestamps and 'ct' in chunk:
                 #logger.debug("Adding timestamp for chunk...")
-                timestamp = six.ensure_text(self.parse_timestamp(chunk['ct']).strftime("%x -- %X"))
+                timestamp = ensure_text(self.parse_timestamp(chunk['ct']).strftime("%x -- %X"))
                 text += '<div class="ut">' + timestamp + '</div>'
 
             text += "</div><br />\n"
@@ -313,7 +311,7 @@ class FictionLiveAdapter(BaseSiteAdapter):
 
         soup = self.make_soup(chunk['b'] if 'b' in chunk else "")
 
-        if self.getConfig('legend_spoilers'):
+        if self.getConfig('legend_spoilers',True):
             soup = self.add_spoiler_legends(soup)
 
         if self.achievements:
@@ -439,9 +437,11 @@ class FictionLiveAdapter(BaseSiteAdapter):
 
         num_voters = len(chunk['votes']) if 'votes' in chunk else 0
 
+        vote_title = chunk['b'] if 'b' in chunk else "Choices"
+
         output = ""
         # start with the header
-        output += u"<h4><span>Choices — <small>Voting " + closed
+        output += u"<h4><span>" + vote_title + " — <small>Voting " + closed
         output += u" — " + str(num_voters) + " voters</small></span></h4>\n"
 
         # we've got everything needed to build the html for our vote table.
