@@ -41,6 +41,7 @@ except ImportError:
 
 from . import exceptions
 from . import fetcher
+from . import nsapa_proxy
 
 ## has to be up here for brotli-dict to load correctly.
 from .browsercache import BrowserCache
@@ -195,6 +196,7 @@ def get_valid_set_options():
                'use_ssl_unverified_context':(None,None,boollist),
                'use_cloudscraper':(None,None,boollist),
                'use_basic_cache':(None,None,boollist),
+               'use_nsapa_proxy':(None,None,boollist),
 
                ## currently, browser_cache_path is assumed to be
                ## shared and only ffnet uses it so far
@@ -255,6 +257,7 @@ def get_valid_set_options():
                'windows_eol':(None,['txt'],boollist),
 
                'include_images':(None,['epub','html'],boollist),
+               'jpg_quality':(None,['epub','html'],None),
                'additional_images':(None,['epub','html'],None),
                'grayscale_images':(None,['epub','html'],boollist),
                'no_image_processing':(None,['epub','html'],boollist),
@@ -398,6 +401,7 @@ def get_valid_keywords():
                  'grayscale_images',
                  'image_max_size',
                  'include_images',
+                 'jpg_quality',
                  'additional_images',
                  'include_logpage',
                  'logpage_at_end',
@@ -480,6 +484,9 @@ def get_valid_keywords():
                  'use_basic_cache',
                  'use_browser_cache',
                  'use_browser_cache_only',
+                 'use_nsapa_proxy',
+                 'nsapa_proxy_address',
+                 'nsapa_proxy_port',
                  'browser_cache_path',
                  'browser_cache_age_limit',
                  'user_agent',
@@ -979,8 +986,11 @@ class Configuration(ConfigParser):
             cookiejar = self.get_fetcher().get_cookiejar()
             # save and re-apply cookiejar when make_new.
         if not self.fetcher or make_new:
-            logger.debug("use_cloudscraper:%s"%self.getConfig('use_cloudscraper'))
-            if self.getConfig('use_cloudscraper',False):
+            if self.getConfig('use_nsapa_proxy',False):
+                logger.debug("use_nsapa_proxy:%s"%self.getConfig('use_nsapa_proxy'))
+                fetchcls = nsapa_proxy.NSAPA_ProxyFetcher
+            elif self.getConfig('use_cloudscraper',False):
+                logger.debug("use_cloudscraper:%s"%self.getConfig('use_cloudscraper'))
                 fetchcls = fetcher.CloudScraperFetcher
             else:
                 fetchcls = fetcher.RequestsFetcher

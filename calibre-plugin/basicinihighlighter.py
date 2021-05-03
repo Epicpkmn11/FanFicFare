@@ -14,7 +14,7 @@ try:
 except ImportError as e:
     from PyQt4.Qt import (Qt, QSyntaxHighlighter, QTextCharFormat, QBrush)
 
-from .fanficfare.six import string_types
+from fanficfare.six import string_types
 
 class BasicIniHighlighter(QSyntaxHighlighter):
     '''

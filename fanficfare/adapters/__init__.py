@@ -33,7 +33,6 @@ from .. import configurable as configurable
 from . import base_efiction_adapter
 from . import adapter_test1
 from . import adapter_fanfictionnet
-from . import adapter_fanficcastletvnet
 from . import adapter_fictionalleyorg
 from . import adapter_fictionpresscom
 from . import adapter_ficwadcom
@@ -77,18 +76,15 @@ from . import adapter_nhamagicalworldsus
 from . import adapter_hlfictionnet
 from . import adapter_dracoandginnycom
 from . import adapter_scarvesandcoffeenet
-from . import adapter_thepetulantpoetesscom
 from . import adapter_wolverineandroguecom
 from . import adapter_merlinficdtwinscouk
 from . import adapter_thehookupzonenet
 from . import adapter_bloodtiesfancom
 from . import adapter_qafficcom
 from . import adapter_efpfanficnet
-from . import adapter_potterficscom
 from . import adapter_faeriearchivecom
 from . import adapter_imagineeficcom
 from . import adapter_potterheadsanonymouscom
-from . import adapter_fictionpadcom
 from . import adapter_storiesonlinenet
 from . import adapter_trekiverseorg
 from . import adapter_literotica
@@ -114,7 +110,6 @@ from . import adapter_mcstoriescom
 from . import adapter_buffygilescom
 from . import adapter_andromedawebcom
 from . import adapter_naiceanilmenet
-from . import adapter_deepinmysoulnet
 from . import adapter_adultfanfictionorg
 from . import adapter_fictionhuntcom
 from . import adapter_royalroadcom
@@ -142,14 +137,12 @@ from . import adapter_sinfuldreamscomwhisperedmuse
 from . import adapter_sinfuldreamscomwickedtemptation
 from . import adapter_asianfanficscom
 from . import adapter_webnovelcom
-from . import adapter_deandamagecom
 from . import adapter_mttjustoncenet
 from . import adapter_narutoficorg
 from . import adapter_starskyhutcharchivenet
 from . import adapter_swordborderlineangelcom
 from . import adapter_tasteofpoisoninkubationnet
 from . import adapter_thedelphicexpansecom
-from . import adapter_thundercatsfansorg
 from . import adapter_wwwaneroticstorycom
 from . import adapter_lcfanficcom
 from . import adapter_noveltrovecom
@@ -176,6 +169,7 @@ from . import adapter_thesietchcom
 from . import adapter_fastnovelnet
 from . import adapter_squidgeworldorg
 from . import adapter_mangadexorg
+from . import adapter_novelfull
 
 ## This bit of complexity allows adapters to be added by just adding
 ## importing.  It eliminates the long if/else clauses we used to need
